@@ -1,4 +1,4 @@
-const CACHE_NAME = 'photo-dbh-v1.0.0';
+const CACHE_NAME = 'photo-dbh-v1.1.0';
 const urlsToCache = [
   './',
   'index.html',
@@ -38,4 +38,5 @@ self.addEventListener('fetch', (event) => {
       // オフライン時にリソースが見つからない場合のフォールバック（今回は特に指定なし）
     })
   );
+
 });
