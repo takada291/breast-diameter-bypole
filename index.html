@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>写真式 直径測定 v1.0</title>
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#28a745">
+    
+    <style>
+        body {
+            margin: 0; overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: #222; color: white;
+            touch-action: none; /* スワイプによる画面スクロールを防止 */
+        }
+
+        /* カメラ映像（撮影前） */
+        #camera-view {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            object-fit: cover; z-index: 1;
+        }
+
+        /* 描画・操作用キャンバス（撮影後） */
+        #photo-canvas {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            object-fit: contain; z-index: 2; display: none;
+            background-color: #000;
+        }
+
+        /* UIレイヤー */
+        .ui-container {
+            position: absolute; bottom: 0; left: 0; width: 100%;
+            padding: 20px 20px 30px 20px; box-sizing: border-box;
+            background: linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0) 100%);
+            z-index: 10; display: flex; flex-direction: column; gap: 10px; text-align: center;
+        }
+
+        /* ステータス表示部 */
+        .status-box {
+            background: rgba(255,255,255,0.9); color: #333;
+            padding: 15px; border-radius: 10px; font-weight: bold; font-size: 1.1rem;
+        }
+        
+        /* 基準尺入力部 */
+        .ref-input-box {
+            display: none; align-items: center; justify-content: center; gap: 10px;
+            background: rgba(255,255,255,0.9); padding: 10px; border-radius: 10px; color:#333;
+        }
+        input[type="number"] {
+            font-size: 1.2rem; padding: 5px; width: 70px; text-align: center; border: 1px solid #ccc; border-radius: 5px;
+        }
+
+        /* ボタン類 */
+        button {
+            padding: 15px; font-size: 1.2rem; border: none; border-radius: 8px;
+            cursor: pointer; font-weight: bold; color: white; transition: transform 0.1s;
+        }
+        button:active { transform: scale(0.98); }
+        .btn-green { background-color: #28a745; }
+        .btn-blue { background-color: #007bff; }
+        .btn-gray { background-color: #6c757d; padding: 10px; font-size: 1rem;}
+
+        /* 結果表示 */
+        #result-box {
+            display: none; background: #fff; color: #333;
+            padding: 20px; border-radius: 10px; text-align: center;
+        }
+        .result-val { font-size: 3rem; font-weight: bold; color: #e67e22; margin: 10px 0;}
+
+        /* 十字カーソルガイド */
+        .center-guide {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 50px; height: 50px; border: 2px solid rgba(255,255,255,0.5); border-radius: 50%;
+            pointer-events: none; z-index: 5;
+        }
+        .center-guide::after { content: '+'; position: absolute; top:50%; left:50%; transform: translate(-50%, -50%); font-size: 24px; color: rgba(255,255,255,0.8); }
+
+    </style>
+</head>
+<body>
+
+    <video id="camera-view" autoplay playsinline muted></video>
+    <div class="center-guide" id="aim-guide"></div>
+
+    <canvas id="photo-canvas"></canvas>
+
+    <div class="ui-container">
+        
+        <div class="status-box" id="status-text">
+            ポールと木が写るように撮影してください
+        </div>
+
+        <div id="result-box">
+            <div>胸高直径 (DBH)</div>
+            <div class="result-val"><span id="dbh-val">0.0</span> cm</div>
+            <button class="btn-gray" onclick="resetAll()">もう一度測定する</button>
+        </div>
+
+        <div class="ref-input-box" id="ref-input">
+            <label>ポールの長さ:</label>
+            <input type="number" id="pole-len" value="2.0" step="0.1"> m
+            <button class="btn-green" style="padding:10px;" onclick="confirmReference()">決定</button>
+        </div>
+
+        <button class="btn-green" id="btn-main" onclick="handleMainAction()">📸 撮影する</button>
+        
+        <button class="btn-gray" id="btn-retake" style="display:none;" onclick="retakePhoto()">撮り直す</button>
+
+    </div>
+
+    <script>
+        const video = document.getElementById('camera-view');
+        const canvas = document.getElementById('photo-canvas');
+        const ctx = canvas.getContext('2d');
+        const statusText = document.getElementById('status-text');
+        const btnMain = document.getElementById('btn-main');
+        
+        let stream = null;
+        let state = 'camera'; // camera, ref1, ref2, waitRef, target1, target2, done
+        
+        // 座標データ
+        let points = {
+            ref1: null, ref2: null,
+            tgt1: null, tgt2: null
+        };
+        let baseImage = null; // 撮影した静止画データ
+
+        // --- 起動 ---
+        async function startCamera() {
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } 
+                });
+                video.srcObject = stream;
+            } catch (err) {
+                alert("カメラの起動に失敗しました: " + err.message);
+            }
+        }
+
+        window.onload = startCamera;
+
+        // --- ボタンアクション管理 ---
+        function handleMainAction() {
+            if (state === 'camera') {
+                takePhoto();
+            }
+        }
+
+        // --- 1. 撮影処理 ---
+        function takePhoto() {
+            // キャンバスサイズをビデオの実際の解像度に合わせる
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            
+            // ビデオ映像をキャンバスに描画
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            // 画像データを保持（再描画用）
+            baseImage = new Image();
+            baseImage.src = canvas.toDataURL('image/jpeg');
+
+            // UI切り替え
+            video.style.display = 'none';
+            document.getElementById('aim-guide').style.display = 'none';
+            canvas.style.display = 'block';
+            
+            document.getElementById('btn-retake').style.display = 'block';
+            btnMain.style.display = 'none'; // メインボタンは隠す
+
+            // 次のステートへ
+            state = 'ref1';
+            updateStatus("【基準設定】ポールの「上端」をタップ");
+            
+            // キャンバスのタッチイベント有効化
+            canvas.addEventListener('mousedown', handleTap);
+            canvas.addEventListener('touchstart', handleTap, {passive: false});
+        }
+
+        // --- キャンバスタップ処理 ---
+        function handleTap(e) {
+            e.preventDefault(); // スクロール防止
+            if (state === 'waitRef' || state === 'done') return;
+
+            // タップ座標をキャンバス内の座標に変換
+            const rect = canvas.getBoundingClientRect();
+            let clientX, clientY;
+            if (e.touches && e.touches.length > 0) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+
+            // 表示サイズと実解像度の比率を計算
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const x = (clientX - rect.left) * scaleX;
+            const y = (clientY - rect.top) * scaleY;
+
+            // 状態に応じたポイント保存
+            if (state === 'ref1') {
+                points.ref1 = {x, y};
+                state = 'ref2';
+                updateStatus("【基準設定】ポールの「下端」をタップ");
+            } else if (state === 'ref2') {
+                points.ref2 = {x, y};
+                state = 'waitRef'; // 長さ入力待ち
+                updateStatus("ポールの長さを入力して「決定」");
+                document.getElementById('ref-input').style.display = 'flex';
+            } else if (state === 'tgt1') {
+                points.tgt1 = {x, y};
+                state = 'tgt2';
+                updateStatus("【測定】木の幹の「右端」をタップ");
+            } else if (state === 'tgt2') {
+                points.tgt2 = {x, y};
+                state = 'done';
+                calculateDiameter();
+            }
+
+            redrawCanvas(); // 線と点を再描画
+        }
+
+        // --- 描画処理 ---
+        function redrawCanvas() {
+            // 元画像を再描画
+            if(baseImage) ctx.drawImage(baseImage, 0, 0, canvas.width, canvas.height);
+
+            // 基準線（ポール）: 青色
+            if (points.ref1) drawPoint(points.ref1.x, points.ref1.y, '#00bfff');
+            if (points.ref2) drawPoint(points.ref2.x, points.ref2.y, '#00bfff');
+            if (points.ref1 && points.ref2) drawLine(points.ref1, points.ref2, '#00bfff');
+
+            // 測定線（幹）: 赤色
+            if (points.tgt1) drawPoint(points.tgt1.x, points.tgt1.y, '#ff3333');
+            if (points.tgt2) drawPoint(points.tgt2.x, points.tgt2.y, '#ff3333');
+            if (points.tgt1 && points.tgt2) drawLine(points.tgt1, points.tgt2, '#ff3333');
+        }
+
+        function drawPoint(x, y, color) {
+            ctx.beginPath();
+            ctx.arc(x, y, 15, 0, 2 * Math.PI); // 円のサイズ
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.lineWidth = 4;
+            ctx.strokeStyle = '#fff'; // 白枠で見やすく
+            ctx.stroke();
+        }
+
+        function drawLine(p1, p2, color) {
+            ctx.beginPath();
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.lineWidth = 5;
+            ctx.strokeStyle = color;
+            ctx.stroke();
+        }
+
+        // --- フロー制御 ---
+        function confirmReference() {
+            document.getElementById('ref-input').style.display = 'none';
+            state = 'tgt1';
+            updateStatus("【測定】木の幹の「左端」をタップ");
+        }
+
+        // --- 計算処理 ---
+        function calculateDiameter() {
+            // ピクセル距離の計算 (三平方の定理)
+            const getDist = (p1, p2) => Math.hypot(p2.x - p1.x, p2.y - p1.y);
+            
+            const refPixelDist = getDist(points.ref1, points.ref2);
+            const tgtPixelDist = getDist(points.tgt1, points.tgt2);
+            
+            // 実際の長さ(m)を取得
+            const poleLenM = parseFloat(document.getElementById('pole-len').value);
+            
+            // 比率計算: (ターゲットピクセル / 基準ピクセル) * 基準長
+            const diameterM = (tgtPixelDist / refPixelDist) * poleLenM;
+            const diameterCm = diameterM * 100;
+
+            // 結果表示
+            document.getElementById('status-text').style.display = 'none';
+            document.getElementById('result-box').style.display = 'block';
+            document.getElementById('dbh-val').textContent = diameterCm.toFixed(1);
+        }
+
+        function updateStatus(text) {
+            statusText.textContent = text;
+        }
+
+        // --- リセット処理 ---
+        function retakePhoto() {
+            resetState();
+            video.style.display = 'block';
+            document.getElementById('aim-guide').style.display = 'block';
+            canvas.style.display = 'none';
+            btnMain.style.display = 'block';
+            document.getElementById('btn-retake').style.display = 'none';
+        }
+
+        function resetAll() {
+            // 画像は残したまま、タップ状態だけリセット（同じ画像で測り直す場合）
+            resetState();
+            state = 'ref1';
+            updateStatus("【基準設定】ポールの「上端」をタップ");
+            redrawCanvas();
+        }
+
+        function resetState() {
+            points = { ref1: null, ref2: null, tgt1: null, tgt2: null };
+            state = 'camera';
+            updateStatus("ポールと木が写るように撮影してください");
+            document.getElementById('status-text').style.display = 'block';
+            document.getElementById('result-box').style.display = 'none';
+            document.getElementById('ref-input').style.display = 'none';
+        }
+
+    </script>
+</body>
+</html>
