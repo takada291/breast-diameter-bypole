@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>直径測定</title>
+    <title>直径測定 v1.1</title>
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#28a745">
     
@@ -28,6 +28,18 @@
             background-color: #000;
         }
 
+        /* 🌟 赤色十字ガイド（常に表示） */
+        .crosshair-h {
+            position: fixed; top: 50%; left: 0; width: 100%; height: 2px;
+            background-color: rgba(255, 0, 0, 0.7);
+            pointer-events: none; z-index: 5;
+        }
+        .crosshair-v {
+            position: fixed; top: 20%; left: 50%; width: 2px; height: 60%;
+            background-color: rgba(255, 0, 0, 0.4);
+            pointer-events: none; z-index: 5;
+        }
+
         /* UIレイヤー */
         .ui-container {
             position: absolute; bottom: 0; left: 0; width: 100%;
@@ -47,8 +59,8 @@
             display: none; align-items: center; justify-content: center; gap: 10px;
             background: rgba(255,255,255,0.9); padding: 10px; border-radius: 10px; color:#333;
         }
-        input[type="number"] {
-            font-size: 1.2rem; padding: 5px; width: 70px; text-align: center; border: 1px solid #ccc; border-radius: 5px;
+        select {
+            font-size: 1.2rem; padding: 5px; width: 80px; text-align: center; border: 1px solid #ccc; border-radius: 5px;
         }
 
         /* ボタン類 */
@@ -68,20 +80,14 @@
         }
         .result-val { font-size: 3rem; font-weight: bold; color: #e67e22; margin: 10px 0;}
 
-        /* 十字カーソルガイド */
-        .center-guide {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            width: 50px; height: 50px; border: 2px solid rgba(255,255,255,0.5); border-radius: 50%;
-            pointer-events: none; z-index: 5;
-        }
-        .center-guide::after { content: '+'; position: absolute; top:50%; left:50%; transform: translate(-50%, -50%); font-size: 24px; color: rgba(255,255,255,0.8); }
-
     </style>
 </head>
 <body>
 
     <video id="camera-view" autoplay playsinline muted></video>
-    <div class="center-guide" id="aim-guide"></div>
+    
+    <div class="crosshair-h"></div>
+    <div class="crosshair-v"></div>
 
     <canvas id="photo-canvas"></canvas>
 
@@ -99,7 +105,7 @@
 
         <div class="ref-input-box" id="ref-input">
             <label>ポールの長さ:</label>
-            <input type="number" id="pole-len" value="2.0" step="0.1"> m
+            <select id="pole-len"></select> m
             <button class="btn-green" style="padding:10px;" onclick="confirmReference()">決定</button>
         </div>
 
@@ -125,6 +131,19 @@
             tgt1: null, tgt2: null
         };
         let baseImage = null; // 撮影した静止画データ
+
+        // 🌟 ポールの長さリスト（0.1〜2.0まで作成し、0.4をデフォルトに）
+        const poleSelect = document.getElementById('pole-len');
+        for(let i = 1; i <= 20; i++) {
+            let val = (i / 10).toFixed(1);
+            let opt = document.createElement('option');
+            opt.value = val;
+            opt.text = val;
+            if (val === "0.4") {
+                opt.selected = true;
+            }
+            poleSelect.appendChild(opt);
+        }
 
         // --- 起動 ---
         async function startCamera() {
@@ -160,9 +179,8 @@
             baseImage = new Image();
             baseImage.src = canvas.toDataURL('image/jpeg');
 
-            // UI切り替え
+            // UI切り替え (十字線はz-index: 5なのでそのまま残る)
             video.style.display = 'none';
-            document.getElementById('aim-guide').style.display = 'none';
             canvas.style.display = 'block';
             
             document.getElementById('btn-retake').style.display = 'block';
@@ -207,7 +225,7 @@
             } else if (state === 'ref2') {
                 points.ref2 = {x, y};
                 state = 'waitRef'; // 長さ入力待ち
-                updateStatus("ポールの長さを入力して「決定」");
+                updateStatus("ポールの長さを確認して「決定」");
                 document.getElementById('ref-input').style.display = 'flex';
             } else if (state === 'tgt1') {
                 points.tgt1 = {x, y};
@@ -293,7 +311,6 @@
         function retakePhoto() {
             resetState();
             video.style.display = 'block';
-            document.getElementById('aim-guide').style.display = 'block';
             canvas.style.display = 'none';
             btnMain.style.display = 'block';
             document.getElementById('btn-retake').style.display = 'none';
